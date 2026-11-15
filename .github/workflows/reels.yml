@@ -28,6 +28,13 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
+
       - name: Install dependensi
         run: pip install edge-tts pillow requests
 
@@ -58,6 +65,9 @@ jobs:
       - name: Deploy ke GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+      - name: Tunggu Pages siap
+        run: sleep 30
 
       - name: Upload ke Instagram
         env:
