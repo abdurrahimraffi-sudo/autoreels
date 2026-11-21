@@ -1,6 +1,6 @@
 name: Reels Harian
 
-on:
+off:
   schedule:
     - cron: "7 5 * * *"     # 05:07 UTC = 12:07 WIB (siang)
     - cron: "37 12 * * *"   # 12:37 UTC = 19:37 WIB (malam)
