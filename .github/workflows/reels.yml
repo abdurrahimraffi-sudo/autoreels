@@ -3,8 +3,11 @@ name: Reels Harian
 on:
   schedule:
     - cron: "7 5 * * *"     # 05:07 UTC = 12:07 WIB (siang)
-    - cron: "37 12 * * *"   # 12:37 UTC = 19:37 WIB (malam)
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "kartun (cerita psikologi) atau fakta (fakta unik)"
+        default: "kartun"
 
 permissions:
   contents: write
@@ -18,7 +21,7 @@ concurrency:
 jobs:
   reels:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -29,21 +32,20 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install FFmpeg
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-          ffmpeg -version | head -n 1
-          ffprobe -version | head -n 1
-
       - name: Install dependensi
         run: pip install edge-tts pillow requests
+
+      - name: Siapkan aset karakter
+        run: |
+          if [ -f aset_karakter.zip ]; then unzip -oq aset_karakter.zip; fi
+          ls aset_karakter 2>/dev/null || echo "(belum ada folder aset_karakter)"
 
       - name: Buat video
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
-        run: python buat_video.py
+        run: |
+          python ${{ github.event.inputs.mode == 'fakta' && 'buat_video.py' || 'buat_video_kartun.py' }}
 
       - name: Simpan riwayat topik
         run: |
@@ -66,9 +68,6 @@ jobs:
       - name: Deploy ke GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
-
-      - name: Tunggu Pages siap
-        run: sleep 30
 
       - name: Upload ke Instagram
         env:
