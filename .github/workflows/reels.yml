@@ -32,6 +32,13 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install ffmpeg (termasuk ffprobe) dan font
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core fonts-liberation
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
+
       - name: Install dependensi
         run: pip install edge-tts pillow requests
 
@@ -56,6 +63,7 @@ jobs:
 
       - name: Siapkan situs (video harian)
         run: |
+          test -f output/reel.mp4 || { echo "output/reel.mp4 tidak ada"; exit 1; }
           mkdir -p site
           cp output/reel.mp4 "site/reel-${{ github.run_id }}.mp4"
 
