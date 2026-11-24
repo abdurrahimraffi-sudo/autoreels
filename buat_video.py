@@ -143,10 +143,24 @@ def panggil_gemini(prompt):
         for percobaan in range(3):  # model sibuk (503/429): tunggu lalu ulangi model yang sama
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent"
             # key lewat header supaya tidak muncul di pesan error
-            r = requests.post(url, json=body, headers={"x-goog-api-key": API_KEY}, timeout=120)
+            try:
+                r = requests.post(url, json=body, headers={"x-goog-api-key": API_KEY}, timeout=(10, 75))
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                # timeout / koneksi putus: perlakukan seperti model sibuk, jangan crash
+                pesan = f"{type(e).__name__}"
+                print(f"   Model {m} gagal ({pesan}), percobaan {percobaan + 1}/3")
+                if percobaan < 2:
+                    time.sleep(10 * (percobaan + 1))
+                    continue
+                break
             if r.status_code == 200:
+                try:
+                    teks = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+                except (KeyError, IndexError, ValueError):
+                    pesan = r.text
+                    print(f"   Model {m} balasan kosong/tidak valid: {pesan[:160].strip()}")
+                    break
                 print("   Model dipakai:", m)
-                teks = r.json()["candidates"][0]["content"]["parts"][0]["text"]
                 break
             pesan = r.text
             print(f"   Model {m} gagal ({r.status_code}): {pesan[:160].strip()}")
