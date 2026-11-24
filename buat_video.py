@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import random
+import re
 import subprocess
 import time
 import urllib.parse
@@ -23,8 +24,8 @@ import requests
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 API_KEY = (os.environ.get("GEMINI_API_KEY") or "").strip().strip('"\'') or None
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
-MODEL_CADANGAN = ["gemini-2.5-flash-lite", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-2.0-flash"]
+MODEL = (os.environ.get("GEMINI_MODEL") or "gemini-3.8-flash").strip()
+MODEL_CADANGAN = ["gemini-3.5-flash-lite", "gemini-3-flash-preview", "gemini-3.1-flash-lite"]
 VOICE = "id-ID-ArdiNeural"  # suara cowok. Ganti "id-ID-GadisNeural" untuk cewek
 W, H = 1080, 1920
 WORK = Path("work")
@@ -106,6 +107,24 @@ Balas HANYA JSON dengan format:
     return panggil_gemini(prompt)
 
 
+def model_tersedia():
+    """Tanya Google model apa saja yang bisa dipakai key ini (flash terbaru lebih dulu)."""
+    try:
+        r = requests.get("https://generativelanguage.googleapis.com/v1beta/models?pageSize=200",
+                         headers={"x-goog-api-key": API_KEY}, timeout=30)
+        nama = [m["name"].split("/", 1)[1] for m in r.json().get("models", [])
+                if "generateContent" in m.get("supportedGenerationMethods", [])]
+    except Exception:
+        return []
+    buang = ("image", "tts", "audio", "live", "embedding", "robotics", "computer", "vision", "native")
+
+    def kunci(n):
+        v = re.search(r"gemini-(\d+(?:\.\d+)?)", n)
+        return (-(float(v.group(1)) if v else 0), "lite" in n, n)
+
+    return sorted([n for n in nama if "flash" in n and not any(x in n for x in buang)], key=kunci)
+
+
 def panggil_gemini(prompt):
     if not API_KEY:
         raise SystemExit("GEMINI_API_KEY belum di-set.")
@@ -113,19 +132,41 @@ def panggil_gemini(prompt):
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"responseMimeType": "application/json", "temperature": 1.0},
     }
-    daftar_model = [MODEL] + [m for m in MODEL_CADANGAN if m != MODEL]
-    teks = None
-    for m in daftar_model:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent"
-        # key dikirim lewat header supaya tidak muncul di pesan error
-        r = requests.post(url, json=body, headers={"x-goog-api-key": API_KEY}, timeout=120)
-        if r.status_code == 200:
-            print("   Model dipakai:", m)
-            teks = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+    antrian = [MODEL] + [m for m in MODEL_CADANGAN if m != MODEL]
+    dicoba, daftar_api_diambil, teks = set(), False, None
+    while antrian and teks is None:
+        m = antrian.pop(0)
+        if m in dicoba:
+            continue
+        dicoba.add(m)
+        pesan = ""
+        for percobaan in range(3):  # model sibuk (503/429): tunggu lalu ulangi model yang sama
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent"
+            # key lewat header supaya tidak muncul di pesan error
+            r = requests.post(url, json=body, headers={"x-goog-api-key": API_KEY}, timeout=120)
+            if r.status_code == 200:
+                print("   Model dipakai:", m)
+                teks = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+                break
+            pesan = r.text
+            print(f"   Model {m} gagal ({r.status_code}): {pesan[:160].strip()}")
+            if r.status_code in (429, 500, 502, 503, 504) and percobaan < 2:
+                time.sleep(10 * (percobaan + 1))
+                continue
             break
-        print(f"   Model {m} gagal ({r.status_code}): {r.text[:200]}")
+        if teks is not None:
+            break
+        # Google sering menyebut model pengganti di pesan error -> coba itu dulu
+        for saran in re.findall(r"models/([A-Za-z0-9.\-]+)", pesan)[::-1]:
+            if saran not in dicoba:
+                antrian.insert(0, saran)
+        # kehabisan kandidat -> minta daftar model terbaru langsung dari Google
+        if not antrian and not daftar_api_diambil:
+            daftar_api_diambil = True
+            antrian += [n for n in model_tersedia() if n not in dicoba]
     if teks is None:
-        raise SystemExit("Semua model gagal. Cek API key / kuota di aistudio.google.com")
+        raise SystemExit("Semua model Gemini gagal. Cek API key / kuota di aistudio.google.com "
+                         "atau coba lagi nanti (mungkin sedang sibuk).")
     return json.loads(teks)
 
 
