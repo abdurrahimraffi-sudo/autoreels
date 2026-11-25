@@ -29,6 +29,13 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install FFmpeg & font
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
+          ffmpeg -version | head -1
+          ffprobe -version | head -1
+
       - name: Install dependensi
         run: pip install edge-tts pillow requests
 
