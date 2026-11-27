@@ -11,8 +11,10 @@ import asyncio
 import json
 import os
 import random
+import re
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from PIL import Image
@@ -77,11 +79,15 @@ Tiap scene punya field:
 Pilih juga SATU latar untuk seluruh video yang paling cocok dengan topik, hanya dari daftar ini:
 {daftar_latar}
 
-Balas HANYA JSON:
-{{"topik": "...", "latar": "salah satu nama latar", "judul_hook": "2-5 kata KAPITAL", "caption": "caption IG singkat + emoji",
- "hashtags": ["#psikologi", "..."], "scenes": [{{"narasi": "...", "tokoh": ["A"], "aksi_A": "netral",
- "kata_besar": "", "balon": false, "jenis_balon": "ucap", "dialog": "", "bicara": "A", "ikon": "",
- "kata_kunci": "..."}}]}}"""
+Aturan caption (field "caption", untuk kolom caption Instagram): 2-3 kalimat yang membahas HANYA topik video ini,
+bukan topik lain. Mulai dengan kalimat pembuka yang menggugah dari topik tersebut, satu inti pesan, lalu pertanyaan
+ajakan komentar. Boleh 1-2 emoji. Tulis caption TERAKHIR, setelah semua scene selesai ditulis.
+
+Balas HANYA JSON (urutan field penting, caption dan hashtags di paling akhir):
+{{"topik": "...", "latar": "salah satu nama latar", "judul_hook": "2-5 kata KAPITAL",
+ "scenes": [{{"narasi": "...", "tokoh": ["A"], "aksi_A": "netral", "kata_besar": "", "balon": false,
+ "jenis_balon": "ucap", "dialog": "", "bicara": "A", "ikon": "", "kata_kunci": "..."}}],
+ "caption": "caption sesuai topik video ini", "hashtags": ["#psikologi", "..."]}}"""
     return bv.panggil_gemini(prompt)
 
 
@@ -141,6 +147,30 @@ AKSI_KE_KODE = {
 
 
 # ------------------------------------------------------------------ VALIDASI NASKAH
+STOP = {"yang", "dengan", "untuk", "dari", "pada", "adalah", "kamu", "kita", "saya", "juga", "akan", "atau",
+        "sering", "banyak", "orang", "bisa", "lebih", "tapi", "karena", "dalam", "itu", "ini", "kali", "apa",
+        "bagaimana", "kenapa", "tidak", "nggak", "banget", "sebenarnya", "psikologi"}
+
+
+def _kata(t):
+    return {w for w in re.findall(r"[a-zA-Z]{4,}", str(t).lower())} - STOP
+
+
+def caption_nyambung(data, scenes):
+    """Caption harus berbagi kata penting dengan topik/judul/naskah awal. Kalau tidak, buat dari naskah sendiri."""
+    acuan = _kata(data["topik"]) | _kata(data["judul_hook"])
+    for sc in scenes[:3]:
+        if isinstance(sc, dict):
+            acuan |= _kata(sc.get("narasi", ""))
+    if acuan & _kata(data["caption"]):
+        return
+    pembuka = (data["judul_hook"].title() + "\n") if data["judul_hook"] else ""
+    pertama = scenes[0].get("narasi", "") if isinstance(scenes[0], dict) else ""
+    terakhir = scenes[-1].get("narasi", "") if isinstance(scenes[-1], dict) else ""
+    print("   Caption dari Gemini tidak nyambung dengan topik -> pakai caption dari naskah sendiri.")
+    data["caption"] = f"{pembuka}{pertama}\n\n{terakhir}".strip()
+
+
 def validasi_naskah(data):
     """Rapikan & periksa naskah dari Gemini. Melempar ValueError kalau tidak layak dipakai."""
     if not isinstance(data, dict):
@@ -154,6 +184,10 @@ def validasi_naskah(data):
     tag = data.get("hashtags")
     data["hashtags"] = [str(t) for t in tag][:10] if isinstance(tag, list) and tag else ["#psikologi", "#edukasi"]
     n_besar = n_balon = n_ikon = 0
+    for sc in scenes:
+        if isinstance(sc, dict):
+            sc["narasi"] = " ".join(str(sc.get("narasi") or "").split())
+    caption_nyambung(data, scenes)
     for sc in scenes:
         if not isinstance(sc, dict):
             raise ValueError("scene bukan objek")
@@ -370,6 +404,10 @@ def bikin_scene(i, sc, tokoh, tema, rng, data, pilihan):
 
 
 def main():
+    bv.cek_ffmpeg()
+    OUT.mkdir(exist_ok=True)
+    for f in (OUT / "meta.json", OUT / "reel.mp4"):  # buang sisa video sebelumnya, supaya tidak ada yang basi
+        f.unlink(missing_ok=True)
     WORK.mkdir(exist_ok=True)
     OUT.mkdir(exist_ok=True)
     riwayat = bv.baca_riwayat()
@@ -430,7 +468,9 @@ def main():
     print("4/4 Menyimpan caption...")
     caption = data["caption"].strip() + "\n\n" + DISCLAIMER + "\n\n" + " ".join(data["hashtags"])
     (OUT / "meta.json").write_text(
-        json.dumps({"topik": data["topik"], "caption": caption}, ensure_ascii=False, indent=2),
+        json.dumps({"topik": data["topik"], "judul_hook": data["judul_hook"], "caption": caption,
+                    "dibuat": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    "run": os.environ.get("GITHUB_RUN_ID", "")}, ensure_ascii=False, indent=2),
         encoding="utf-8")
     if not DEMO:
         riwayat.append(data["topik"])

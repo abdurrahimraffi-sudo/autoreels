@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
@@ -49,9 +50,20 @@ def main():
     video_url = sys.argv[1]
 
     meta = Path("output/meta.json")
-    caption = ""
+    caption, info = "", {}
     if meta.exists():
-        caption = json.loads(meta.read_text(encoding="utf-8")).get("caption", "")
+        info = json.loads(meta.read_text(encoding="utf-8"))
+        caption = info.get("caption", "")
+    run_id = os.environ.get("GITHUB_RUN_ID")
+    if run_id and info.get("run") != run_id:
+        # di GitHub: caption wajib berasal dari run yang sama, supaya tidak memakai caption video lain
+        raise SystemExit("[BERHENTI] output/meta.json bukan dari run ini (caption basi). Upload dibatalkan.")
+    if info.get("dibuat") and not run_id:
+        umur = datetime.now(timezone.utc) - datetime.fromisoformat(info["dibuat"])
+        if umur.total_seconds() > 6 * 3600:
+            print(f"PERINGATAN: meta.json dibuat {umur.total_seconds() / 3600:.0f} jam lalu, caption mungkin bukan untuk video ini.")
+    print("Topik  :", info.get("topik", "(tidak ada)"))
+    print("Caption:", caption[:200].replace("\n", " / "))
 
     # tunggu sampai URL video benar-benar bisa dibuka publik (GitHub Pages butuh waktu)
     ok = False

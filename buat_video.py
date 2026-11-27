@@ -14,9 +14,9 @@ import json
 import os
 import random
 import re
-import shutil
 import subprocess
 import time
+from datetime import datetime, timezone
 import urllib.parse
 from pathlib import Path
 
@@ -102,9 +102,13 @@ Struktur:
 - image_prompt: bahasa Inggris, visual jelas, tanpa teks/huruf di gambar, tanpa orang terkenal.
 - keyword: 1-3 kata Inggris SANGAT umum untuk cari foto stok (contoh: "jellyfish", "deep ocean", "microscope", "clock").
 
-Balas HANYA JSON dengan format:
-{{"topik": "...", "judul_hook": "...", "caption": "caption IG singkat + emoji", "hashtags": ["#faktaunik", "..."],
- "scenes": [{{"narasi": "...", "kata_kunci": "...", "image_prompt": "...", "keyword": "..."}}]}}"""
+Aturan caption (field "caption"): 2-3 kalimat yang membahas HANYA fakta pada video ini, bukan topik lain: kalimat
+pembuka menggugah, inti faktanya, lalu pertanyaan ajakan komentar. Boleh 1-2 emoji. Tulis caption TERAKHIR.
+
+Balas HANYA JSON dengan format (caption dan hashtags di paling akhir):
+{{"topik": "...", "judul_hook": "...",
+ "scenes": [{{"narasi": "...", "kata_kunci": "...", "image_prompt": "...", "keyword": "..."}}],
+ "caption": "caption sesuai fakta video ini", "hashtags": ["#faktaunik", "..."]}}"""
     return panggil_gemini(prompt)
 
 
@@ -141,32 +145,18 @@ def panggil_gemini(prompt):
             continue
         dicoba.add(m)
         pesan = ""
-        for percobaan in range(2):  # model sibuk (503/429): tunggu lalu ulangi model yang sama
+        for percobaan in range(3):  # model sibuk (503/429): tunggu lalu ulangi model yang sama
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent"
             # key lewat header supaya tidak muncul di pesan error
-            try:
-                r = requests.post(url, json=body, headers={"x-goog-api-key": API_KEY}, timeout=(10, 75))
-            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
-                # timeout / koneksi putus: perlakukan seperti model sibuk, jangan crash
-                pesan = f"{type(e).__name__}"
-                print(f"   Model {m} gagal ({pesan}), percobaan {percobaan + 1}/2")
-                if percobaan < 1:
-                    time.sleep(5 * (percobaan + 1))
-                    continue
-                break
+            r = requests.post(url, json=body, headers={"x-goog-api-key": API_KEY}, timeout=120)
             if r.status_code == 200:
-                try:
-                    teks = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-                except (KeyError, IndexError, ValueError):
-                    pesan = r.text
-                    print(f"   Model {m} balasan kosong/tidak valid: {pesan[:160].strip()}")
-                    break
                 print("   Model dipakai:", m)
+                teks = r.json()["candidates"][0]["content"]["parts"][0]["text"]
                 break
             pesan = r.text
             print(f"   Model {m} gagal ({r.status_code}): {pesan[:160].strip()}")
-            if r.status_code in (429, 500, 502, 503, 504) and percobaan < 1:
-                time.sleep(5 * (percobaan + 1))
+            if r.status_code in (429, 500, 502, 503, 504) and percobaan < 2:
+                time.sleep(10 * (percobaan + 1))
                 continue
             break
         if teks is not None:
@@ -398,35 +388,42 @@ async def bikin_suara(teks, path):
     )
 
 
+def cek_ffmpeg():
+    """Pastikan FFmpeg terpasang; beri pesan yang jelas kalau tidak."""
+    import shutil
+    if not shutil.which("ffmpeg"):
+        raise SystemExit("FFmpeg belum terpasang di mesin ini. Di GitHub: tambahkan langkah "
+                         "'sudo apt-get install -y ffmpeg'. Di Windows: 'winget install ffmpeg'.")
+
+
 def durasi(path):
-    """Durasi file audio/video (detik). Pakai ffprobe; kalau tidak ada, baca dari ffmpeg."""
-    if shutil.which("ffprobe"):
+    try:
         r = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "default=nw=1:nk=1", str(path)],
             capture_output=True, text=True, check=True,
         )
         return float(r.stdout.strip())
-    if not shutil.which("ffmpeg"):
-        raise SystemExit("FFmpeg belum ter-install (ffprobe & ffmpeg tidak ditemukan).")
-    r = subprocess.run(["ffmpeg", "-i", str(path)], capture_output=True, text=True)
-    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", r.stderr)
-    if not m:
-        raise RuntimeError(f"Gagal membaca durasi: {path}")
-    h, mnt, d = m.groups()
-    return int(h) * 3600 + int(mnt) * 60 + float(d)
+    except FileNotFoundError:
+        # ffprobe tidak ada -> baca durasi lewat ffmpeg
+        cek_ffmpeg()
+        r = subprocess.run(["ffmpeg", "-i", str(path)], capture_output=True, text=True)
+        m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", r.stderr)
+        if not m:
+            raise SystemExit("Gagal membaca durasi audio/video.")
+        h, mi, sec = m.groups()
+        return int(h) * 3600 + int(mi) * 60 + float(sec)
 
 
 def jalan(cmd):
-    # simpan stderr supaya kalau ffmpeg gagal, penyebabnya kelihatan di log
-    r = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-    if r.returncode != 0:
-        print("  PERINTAH GAGAL:", " ".join(str(c) for c in cmd[:4]), "...")
-        print("\n".join(r.stderr.strip().splitlines()[-15:]))
-        raise subprocess.CalledProcessError(r.returncode, cmd)
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def main():
+    cek_ffmpeg()
+    OUT.mkdir(exist_ok=True)
+    for f in (OUT / "meta.json", OUT / "reel.mp4"):  # buang sisa video sebelumnya
+        f.unlink(missing_ok=True)
     WORK.mkdir(exist_ok=True)
     OUT.mkdir(exist_ok=True)
     riwayat = baca_riwayat()
@@ -523,7 +520,9 @@ def main():
     print("4/4 Menyimpan caption...")
     caption = data["caption"].strip() + "\n\n" + " ".join(data["hashtags"])
     (OUT / "meta.json").write_text(
-        json.dumps({"topik": data["topik"], "caption": caption}, ensure_ascii=False, indent=2),
+        json.dumps({"topik": data["topik"], "judul_hook": data.get("judul_hook", ""), "caption": caption,
+                    "dibuat": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    "run": os.environ.get("GITHUB_RUN_ID", "")}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     riwayat.append(data["topik"])
